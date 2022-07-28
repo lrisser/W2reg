@@ -348,12 +348,14 @@ def LargeDatasetPred(model,var_X,BlockSizes,DEVICE='cpu'):
 
 def W2R_fit(model,X_data,y_data, S, lambdavar, f_loss_attach=nn.MSELoss() , EPOCHS = 5, BATCH_SIZE = 32,obs_for_histo=1000,DistBetween='All_predictions',DEVICE='cpu',optim_lr=0.0001):
     """
-    -> The input pytorch tensors (X_data) are supposed to have a shape structured as [BatchSize,NbChannels,ImSizeX,ImSizeY]. 
+    -> The input pytorch tensors (X_data) are supposed to have a shape structured as [BatchSize,NbChannels,ImSizeX,ImSizeY],  [BatchSize,ImSizeX,ImSizeY], or [BatchSize,ObsSize], . 
     -> The output pytorch tensors (y_data) are a vector of binary values
     -> S can be a list or a 1D pytorch.tensor or np.array 
     -> DistBetween can be : 'Predictions_errors' or 'All_predictions'
     -> f_loss_attach: Data attachment term in the loss. Can be eg  nn.MSELoss(), nn.BCELoss(), ...
     """
+    
+    inputdatadim=len(X_data.shape)-1  #dimension of the input data (-1 is to take into account the fact that the first dimension corresponds to the observations)
 
     optimizer = torch.optim.Adam(model.parameters(),lr=optim_lr) #,lr=0.001, betas=(0.9,0.999))
     
@@ -393,13 +395,19 @@ def W2R_fit(model,X_data,y_data, S, lambdavar, f_loss_attach=nn.MSELoss() , EPOC
             
             Curr_obsIDs=obsIDs[batch_start:batch_start+BATCH_SIZE]
             
-            var_X_batch = X_data[Curr_obsIDs,:,:,:].float().to(DEVICE)
-            var_y_batch = y_data[Curr_obsIDs,0].reshape(-1,1).float()  #added in the 1d case
+            if inputdatadim==1:
+              X_batch = X_data[Curr_obsIDs,:].float().to(DEVICE)
+            elif inputdatadim==2:
+              X_batch = X_data[Curr_obsIDs,:,:].float().to(DEVICE)
+            else:
+              X_batch = X_data[Curr_obsIDs,:,:,:].float().to(DEVICE)
+            
+            y_batch = y_data[Curr_obsIDs,0].reshape(-1,1).float()  #added in the 1d case
             
             optimizer.zero_grad()
             
             #2) prediction in the mini-batch
-            output = model(var_X_batch)
+            output = model(X_batch)
             
             #3) information to compute the Wasserstein histograms (may be computed at some iterations only)
             #3.1) get current observation IDs for S=0 
@@ -421,15 +429,21 @@ def W2R_fit(model,X_data,y_data, S, lambdavar, f_loss_attach=nn.MSELoss() , EPOC
             S_4histo=S[obsIDs_4histo]            
             
             #3.4) predictions for the histograms
-            var_X_4histo = X_data[obsIDs_4histo,:,:,:].float().to(DEVICE)
-            var_y_4histo = y_data[obsIDs_4histo,0].reshape(-1,1).float()  #added in the 1d case
+            if inputdatadim==1:
+              X_4histo = X_data[obsIDs_4histo,:].float().to(DEVICE)
+            elif inputdatadim==2: 
+              X_4histo = X_data[obsIDs_4histo,:,:].float().to(DEVICE)
+            else:
+              X_4histo = X_data[obsIDs_4histo,:,:,:].float().to(DEVICE)
+              
+            y_4histo = y_data[obsIDs_4histo,0].reshape(-1,1).float()  #added in the 1d case
             with torch.no_grad():
-                y_pred_4histo = model(var_X_4histo.float())
+                y_pred_4histo = model(X_4histo.float())
                 
             
             #3.5) concatenate the histogram information with those of the mini-batch
-            #var_X_4histo=torch.cat([var_X_4histo,var_X_batch],dim=0)
-            var_y_4histo=torch.cat([var_y_4histo,var_y_batch],dim=0)
+            #X_4histo=torch.cat([X_4histo,X_batch],dim=0)
+            y_4histo=torch.cat([y_4histo,y_batch],dim=0)
             y_pred_4histo=torch.cat([y_pred_4histo,output],dim=0)
                 
                 
@@ -439,12 +453,12 @@ def W2R_fit(model,X_data,y_data, S, lambdavar, f_loss_attach=nn.MSELoss() , EPOC
             InfoPenaltyTerm['mb_S']=S[Curr_obsIDs]
             InfoPenaltyTerm['o4h_S']=S_4histo
             InfoPenaltyTerm['o4h_y_pred']=y_pred_4histo.to('cpu')
-            InfoPenaltyTerm['o4h_y_true']=var_y_4histo
+            InfoPenaltyTerm['o4h_y_true']=y_4histo
             InfoPenaltyTerm['DistBetween']=DistBetween    #'Predictions_errors' or 'All_predictions'
             InfoPenaltyTerm['lambdavar']=lambdavar
             
-            loss_attach=f_loss_attach(output.to('cpu'), var_y_batch.view(-1,1))
-            loss_regula=f_loss_regula(output.to('cpu'), var_y_batch.view(-1,1),InfoPenaltyTerm)  #fair loss - must be calculated in the CPU but backpropagation is OK in the GPU (tested with pytorch 1.3.1)
+            loss_attach=f_loss_attach(output.to('cpu'), y_batch.view(-1,1))
+            loss_regula=f_loss_regula(output.to('cpu'), y_batch.view(-1,1),InfoPenaltyTerm)  #fair loss - must be calculated in the CPU but backpropagation is OK in the GPU (tested with pytorch 1.3.1)
             loss =  loss_attach+loss_regula
             
             #print(loss_attach.item())
