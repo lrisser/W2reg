@@ -257,16 +257,15 @@ class FairLoss(torch.autograd.Function):
       
     An important structure to compute the Wasserstein distance and its gradient is 'InfoPenaltyTerm', 
     which is given as an input of the 'forward' method. It is a dictionary containing:
-      -> InfoPenaltyTerm['lambda']: the weight on the regularization term
       -> InfoPenaltyTerm['mb_S']:  np.array vector containing the sensitive variables labels in the mini-batch.  Each label is in {0,1}.
       -> InfoPenaltyTerm['o4h_S']: np.array vector containing the sensitive variables labels in the observations for the histograms.  Each label is in {0,1}.
       -> InfoPenaltyTerm['o4h_y_pred']: pytorch-tensor vector containing the predicted probabilities that we have label 1 for the histograms. Each probability is in [0,1]. 
       -> InfoPenaltyTerm['o4h_y_true']: pytorch-tensor vector containing the true selection variable for the histograms. Each label is in {0,1}.
       -> InfoPenaltyTerm['DistBetween']: =equal All_predictions' to regularize the predictions or 'Predictions_errors' to regularize the prediction errors
+      -> InfoPenaltyTerm['lambdavar']: weight given to the penalty term
     
     Note that when running 'forward', these values will additionally be saved in 'InfoPenaltyTerm':
-      -> InfoPenaltyTerm['E_Reg']: regularization energy
-      -> InfoPenaltyTerm['E_Simi']: similarity energy
+      -> InfoPenaltyTerm['E_Reg']: regularization energy  (after being weighted by InfoPenaltyTerm['lambdavar'])
     """
         
     @staticmethod
@@ -277,7 +276,7 @@ class FairLoss(torch.autograd.Function):
         * InfoPenaltyTerm is the dictionary that contains the pertinent information to compute the regularization term and its gradient 
         """
         
-        #0) reshape y if not formated as y_pred, before saving it in the context
+        #1) reshape y if not formated as y_pred, before saving it in the context
         if y.dim()==1:   #check if 1D ref outputs
            y=y.view(-1,1)
         
@@ -286,43 +285,25 @@ class FairLoss(torch.autograd.Function):
         
         ctx.save_for_backward(y, y_pred)
         
-        #1) compute the similarity term
-        E_Simi=(y_pred - y).pow(2.).mean()
-        
         #2) compute the W2 penalty information and save it for the backward method
-        if (InfoPenaltyTerm['lambda']>0.):
-           [W_Gradients,W_score]=EstimGrad_W2dist(InfoPenaltyTerm['mb_S'],y_pred,y,InfoPenaltyTerm['o4h_S'],InfoPenaltyTerm['o4h_y_pred'],InfoPenaltyTerm['o4h_y_true'], NbBins=500,ID_TreatedVar=0,DistBetween=InfoPenaltyTerm['DistBetween']) #DistBetween = 'All_predictions' or 'Predictions_errors'
-           ctx.W_Gradients=W_Gradients
-        else:
-            W_score=0.
+        [W_Gradients,W_score]=EstimGrad_W2dist(InfoPenaltyTerm['mb_S'],y_pred,y,InfoPenaltyTerm['o4h_S'],InfoPenaltyTerm['o4h_y_pred'],InfoPenaltyTerm['o4h_y_true'], NbBins=500,ID_TreatedVar=0,DistBetween=InfoPenaltyTerm['DistBetween']) #DistBetween = 'All_predictions' or 'Predictions_errors'
+        W_score_pt=torch.tensor(InfoPenaltyTerm['lambdavar']*W_score)
+        ctx.W_Gradients=torch.tensor((InfoPenaltyTerm['lambdavar']*W_Gradients).astype(np.float32))
+        
         
         #3) save the energies
-        InfoPenaltyTerm['E_Simi']=E_Simi
-        InfoPenaltyTerm['E_Reg']=W_score
+        InfoPenaltyTerm['E_Reg']=W_score_pt
         ctx.InfoPenaltyTerm=InfoPenaltyTerm
         
-        return E_Simi+ctx.InfoPenaltyTerm['lambda']*W_score 
+        return W_score_pt
 
     @staticmethod
     def backward(ctx, grad_output):
         """
         Requires the information saved in the forward function:
-          ctx.saved_tensors -> y and y_pred
           ctx.W_Gradients -> gradient of the wasserstein regularization term
-          ctx.InfoPenaltyTerm -> only used for InfoPenaltyTerm['lambda']
         """
-        
-       
-        #0) init
-        yy, yy_pred = ctx.saved_tensors
-        grad_input = grad_output.clone()
-        
-        #1) gradient of the similarity term
-        grad_input = 2.0*(yy_pred - yy)
-        
-        #2) update the gradient with the penalty term
-        if (ctx.InfoPenaltyTerm['lambda']>0.):
-            grad_input += ctx.InfoPenaltyTerm['lambda']*torch.tensor((ctx.W_Gradients).astype(np.float32))
+        grad_input = ctx.W_Gradients
         
         return grad_input, None, None  #second None added because of the context information in forward
 
@@ -365,19 +346,19 @@ def LargeDatasetPred(model,var_X,BlockSizes,DEVICE='cpu'):
 
 
 
-def W2R_fit(model,X_data,y_data, S, lambdavar, EPOCHS = 5, BATCH_SIZE = 32,obs_for_histo=1000,DistBetween='All_predictions',DEVICE='cpu'):
+def W2R_fit(model,X_data,y_data, S, lambdavar, f_loss_attach=nn.MSELoss() , EPOCHS = 5, BATCH_SIZE = 32,obs_for_histo=1000,DistBetween='All_predictions',DEVICE='cpu',optim_lr=0.0001):
     """
     -> The input pytorch tensors (X_data) are supposed to have a shape structured as [BatchSize,NbChannels,ImSizeX,ImSizeY]. 
     -> The output pytorch tensors (y_data) are a vector of binary values
     -> S can be a list or a 1D pytorch.tensor or np.array 
     -> DistBetween can be : 'Predictions_errors' or 'All_predictions'
+    -> f_loss_attach: Data attachment term in the loss. Can be eg  nn.MSELoss(), nn.BCELoss(), ...
     """
 
-    optimizer = torch.optim.Adam(model.parameters(),lr=0.0001) #,lr=0.001, betas=(0.9,0.999))
-    error = FairLoss.apply      #fair loss
-    #error = nn.BCELoss()  #alternative standard loss
-    #error = nn.MSELoss()  #alternative standard loss
-
+    optimizer = torch.optim.Adam(model.parameters(),lr=optim_lr) #,lr=0.001, betas=(0.9,0.999))
+    
+    f_loss_regula = FairLoss.apply      #fair loss
+    
     model.train()
     
     
@@ -388,7 +369,6 @@ def W2R_fit(model,X_data,y_data, S, lambdavar, EPOCHS = 5, BATCH_SIZE = 32,obs_f
     
     Lists_Results={}
     Lists_Results['Acc']=[]
-    Lists_Results['lambda']=[]
     Lists_Results['W2']=[]
 
     
@@ -456,13 +436,20 @@ def W2R_fit(model,X_data,y_data, S, lambdavar, EPOCHS = 5, BATCH_SIZE = 32,obs_f
                 
             #4) compute the loss and perform the gradient descent step 
             InfoPenaltyTerm={}                                         #FOR THE W2 REGULARIZATION
-            InfoPenaltyTerm['lambda']=lambdavar                        #Weight between the data similarity term and the penalty term -> E = E_{simi} + \lambda * E_{pena} 
             InfoPenaltyTerm['mb_S']=S[Curr_obsIDs]
             InfoPenaltyTerm['o4h_S']=S_4histo
             InfoPenaltyTerm['o4h_y_pred']=y_pred_4histo.to('cpu')
             InfoPenaltyTerm['o4h_y_true']=var_y_4histo
             InfoPenaltyTerm['DistBetween']=DistBetween    #'Predictions_errors' or 'All_predictions'
-            loss = error(output.to('cpu'), var_y_batch.view(-1,1),InfoPenaltyTerm)  #fair loss - must be calculated in the CPU but backpropagation is OK in the GPU (tested with pytorch 1.3.1)
+            InfoPenaltyTerm['lambdavar']=lambdavar
+            
+            loss_attach=f_loss_attach(output.to('cpu'), var_y_batch.view(-1,1))
+            loss_regula=f_loss_regula(output.to('cpu'), var_y_batch.view(-1,1),InfoPenaltyTerm)  #fair loss - must be calculated in the CPU but backpropagation is OK in the GPU (tested with pytorch 1.3.1)
+            loss =  loss_attach+loss_regula
+            
+            #print(loss_attach.item())
+            #print(loss_regula.item())
+            #print(loss.item())
 
             loss.backward()
             optimizer.step()
@@ -474,15 +461,14 @@ def W2R_fit(model,X_data,y_data, S, lambdavar, EPOCHS = 5, BATCH_SIZE = 32,obs_f
             
             
             #9) save pertinent information to check the convergence
-            locLoss=InfoPenaltyTerm['E_Simi'].numpy()
+            locLoss=loss_attach.item()
             locW2=InfoPenaltyTerm['E_Reg']
               
             Lists_Results['Acc'].append(locLoss)
-            Lists_Results['lambda'].append(lambdavar)
             Lists_Results['W2'].append(locW2)
             
             
-            print("epoch "+str(epoch)+" -- batchNb "+str(batchNb)+": "+str(Lists_Results['Acc'][-1])+' '+str(locW2)+' --  lambda='+str(Lists_Results['lambda'][-1]))
+            print("epoch "+str(epoch)+" -- batchNb "+str(batchNb)+": "+str(Lists_Results['Acc'][-1])+' '+str(locW2)+' --  lambda='+str(lambdavar))
         
         epoch+=1
     
