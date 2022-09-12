@@ -232,3 +232,69 @@ def ResNet_18_for_MNIST_srt():
   
   return resnet_model
 
+
+
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+#3) functions to make predictions on large datasets
+#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+def LargeDatasetPred(model,var_X,BlockSizes,DEVICE='cpu'):
+  n_loc=var_X.shape[0]
+  
+  loc_miniBatch_Start=0
+  
+  while loc_miniBatch_Start<n_loc:
+    #define the mini-batch domain
+    loc_miniBatch_End=loc_miniBatch_Start+BlockSizes
+    if loc_miniBatch_End >= n_loc:
+      loc_miniBatch_End = n_loc
+    
+    #local prediction
+    with torch.no_grad():
+      minibatch=var_X[loc_miniBatch_Start:loc_miniBatch_End,:,:,:].to(DEVICE)
+      loc_predY=model(minibatch)
+      loc_predY=loc_predY.to('cpu')
+    
+    #merge local prediction with former ones
+    if loc_miniBatch_Start==0:
+      all_predY=torch.clone(loc_predY)
+    else:
+      all_predY=torch.cat([all_predY,loc_predY],dim=0)
+    
+    #increment loc_miniBatch_Start
+    loc_miniBatch_Start+=BlockSizes
+  
+  return all_predY
+
+
+def LargeDatasetPred_nlp(model,var_X,var_mask,BlockSizes,DEVICE='cpu'):
+  n_loc=var_X.shape[0]
+  
+  loc_miniBatch_Start=0
+  
+  while loc_miniBatch_Start<n_loc:
+    #define the mini-batch domain
+    loc_miniBatch_End=loc_miniBatch_Start+BlockSizes
+    if loc_miniBatch_End >= n_loc:
+      loc_miniBatch_End = n_loc
+    
+    #local prediction
+    with torch.no_grad():
+      minibatch_X=var_X[loc_miniBatch_Start:loc_miniBatch_End,:].to(DEVICE)
+      minibatch_mask=var_mask[loc_miniBatch_Start:loc_miniBatch_End,:].to(DEVICE)
+      loc_predY=model(ids=minibatch_X, mask=minibatch_mask)
+      loc_predY=loc_predY.to('cpu')
+    
+    #merge local prediction with former ones
+    if loc_miniBatch_Start==0:
+      all_predY=torch.clone(loc_predY)
+    else:
+      all_predY=torch.cat([all_predY,loc_predY],dim=0)
+    
+    #increment loc_miniBatch_Start
+    loc_miniBatch_Start+=BlockSizes
+  
+  return all_predY
+
+
