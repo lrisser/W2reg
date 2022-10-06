@@ -88,17 +88,17 @@ def cpt_BasicDescrStats(pred_y, true_Y, sensitivities):
     #generate a dictionary with the results
     results={}
     results['s0_total']=s0_True0+s0_True1
-    results['s0_TP']=s0_Pred1_True1/s0_True1
-    results['s0_FP']=s0_Pred1_True0/s0_True0
-    results['s0_TN']=s0_Pred0_True0/s0_True0
-    results['s0_FN']=s0_Pred0_True1/s0_True1
-    results['s0_RatioGoodPred']=(s0_Pred0_True0+s0_Pred1_True1)/results['s0_total']
+    results['s0_TP']=np.round(s0_Pred1_True1/s0_True1 , 3)
+    results['s0_FP']=np.round(s0_Pred1_True0/s0_True0 , 3)
+    results['s0_TN']=np.round(s0_Pred0_True0/s0_True0 , 3)
+    results['s0_FN']=np.round(s0_Pred0_True1/s0_True1 , 3)
+    results['s0_RatioGoodPred']=np.round((s0_Pred0_True0+s0_Pred1_True1)/results['s0_total'] , 3)
     results['s1_total']=s1_True0+s1_True1
-    results['s1_TP']=s1_Pred1_True1/s1_True1
-    results['s1_FP']=s1_Pred1_True0/s1_True0
-    results['s1_TN']=s1_Pred0_True0/s1_True0
-    results['s1_FN']=s1_Pred0_True1/s1_True1
-    results['s1_RatioGoodPred']=(s1_Pred0_True0+s1_Pred1_True1)/results['s1_total']
+    results['s1_TP']=np.round(s1_Pred1_True1/s1_True1 , 3)
+    results['s1_FP']=np.round(s1_Pred1_True0/s1_True0 , 3)
+    results['s1_TN']=np.round(s1_Pred0_True0/s1_True0 , 3)
+    results['s1_FN']=np.round(s1_Pred0_True1/s1_True1 , 3)
+    results['s1_RatioGoodPred']=np.round((s1_Pred0_True0+s1_Pred1_True1)/results['s1_total'] , 3)
 
     return results
 
@@ -197,11 +197,103 @@ def Get_n_Treat_MNIST_srt():
 
 
 
+def Get_unbalanced_MNIST(NbClassObsInS0=50,NbClassObsInS1=300):
+  """
+  Get a subset of the MNIST dataset so that:
+    -> Each digit 0, 1, 2, 3, 4, 5, 6, 8, 9 is observed NbClassObsInS1 times -> they will be in class S1
+    -> Each digit 7 is observed NbClassObsInS0 times                   -> they will be in class S0
+  """
+  
+  #1) get row mnist data
+  mnist_trainset = datasets.MNIST(root='./data', train=True, download=True, transform=None)
+  mnist_testset  = datasets.MNIST(root='./data', train=False, download=True, transform=None)
+  
+  X_train=mnist_trainset.data      #60000 observations of size 28*28 -- torch.uint8
+  y_train=mnist_trainset.targets   #60000 observations in 1D -- torch.int64
+
+  X_test=mnist_testset.data      #10000 observations of size 28*28 -- torch.uint8
+  y_test=mnist_testset.targets   #10000 observations in 1D -- torch.int64
+
+
+  #2) select a subset of the training data. They will be the observations for which S=0. 
+
+  #2.1) select the observations
+  Y0=torch.where(mnist_trainset.targets==0)[0]
+  Y0_rselect=Y0[torch.randperm(Y0.shape[0])[0:NbClassObsInS1]]
+  
+  Y1=torch.where(mnist_trainset.targets==1)[0]
+  Y1_rselect=Y1[torch.randperm(Y1.shape[0])[0:NbClassObsInS1]]
+
+  Y2=torch.where(mnist_trainset.targets==2)[0]
+  Y2_rselect=Y2[torch.randperm(Y2.shape[0])[0:NbClassObsInS1]]
+  
+  Y3=torch.where(mnist_trainset.targets==3)[0]
+  Y3_rselect=Y3[torch.randperm(Y3.shape[0])[0:NbClassObsInS1]]
+  
+  Y4=torch.where(mnist_trainset.targets==4)[0]
+  Y4_rselect=Y4[torch.randperm(Y4.shape[0])[0:NbClassObsInS1]]
+  
+  Y5=torch.where(mnist_trainset.targets==5)[0]
+  Y5_rselect=Y5[torch.randperm(Y5.shape[0])[0:NbClassObsInS1]]
+  
+  Y6=torch.where(mnist_trainset.targets==6)[0]
+  Y6_rselect=Y6[torch.randperm(Y6.shape[0])[0:NbClassObsInS1]]
+  
+  Y7=torch.where(mnist_trainset.targets==7)[0]
+  Y7_rselect=Y7[torch.randperm(Y7.shape[0])[0:NbClassObsInS0]]
+  
+  Y8=torch.where(mnist_trainset.targets==8)[0]
+  Y8_rselect=Y8[torch.randperm(Y8.shape[0])[0:NbClassObsInS1]]
+  
+  Y9=torch.where(mnist_trainset.targets==9)[0]
+  Y9_rselect=Y9[torch.randperm(Y9.shape[0])[0:NbClassObsInS1]]
+  
+  #2.2) merge the observations
+  obsS1=torch.cat([Y0_rselect,Y1_rselect,Y2_rselect,Y3_rselect,Y4_rselect,Y5_rselect,Y6_rselect,Y8_rselect,Y9_rselect],axis=0)
+  obsS0=torch.cat([Y7_rselect],axis=0)
+  
+  obsAll=torch.cat([obsS0,obsS1],axis=0)
+  
+  X_train=X_train[obsAll,:,:]
+  y_train=y_train[obsAll]   #60000 observations in 1D -- torch.int64
+  
+  #2.3) generate corresponding S_train
+  S_train=np.zeros(obsS0.shape[0]+obsS1.shape[0]).astype(np.int32)
+  S_train[obsS0.shape[0]:]=1
+  
+  #2.4) shuffle the observations
+  shuffledIDs=torch.randperm(S_train.shape[0])
+  
+  X_train=X_train[shuffledIDs,:,:]
+  y_train=y_train[shuffledIDs]   #60000 observations in 1D -- torch.int64
+  S_train=S_train[shuffledIDs]
+  
+  #3) define the S in the test set
+  Y7_tst=torch.where(y_test==7)[0]
+  
+  S_test=np.ones(y_test.shape[0]).astype(np.int32)
+  S_test[Y7_tst]=0
+  
+  #4) set the tensors to standard dimensions
+  X_train=X_train.view(-1,1,28,28) #add a dimension for the channels
+  X_test=X_test.view(-1,1,28,28) #add a dimension for the channels
+  #y_train=y_train.view(-1,1)
+  #y_test=y_test.view(-1,1)
+  
+  
+  y_train_oh = torch.nn.functional.one_hot(y_train.to(torch.int64), 10)
+  y_test_oh = torch.nn.functional.one_hot(y_test.to(torch.int64), 10)
+
+
+  return [X_train,y_train_oh,S_train,X_test,y_test_oh,S_test]
 
 
 def show_MNIST_image(LodID,X,Y,S):
   LocImage=(X[LodID,0,:,:])
-  LocTitle='Y='+str(int(Y[LodID]))+' / S='+str(S[LodID])
+  if len(Y.shape)==1:
+    LocTitle='Y='+str(int(Y[LodID]))+' / S='+str(S[LodID])
+  else:
+    LocTitle='Y='+str(Y[LodID,:])+' / S='+str(S[LodID])
   plt.figure()
   plt.imshow(LocImage)
   plt.title(LocTitle)
@@ -214,9 +306,9 @@ def show_MNIST_image(LodID,X,Y,S):
 #neural network model
 #+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-def ResNet_18_for_MNIST_srt():
+def ResNet_18_for_MNIST_srt(output_size=1):
   """
-    Load a pretrained ResNet-18 model from PyTorch with a specific last dense layer and one input channel.
+    Load a pretrained ResNet-18 classification model from PyTorch with a specific last dense layer and one input channel.
     """
   # Load a pretrained ResNet-18 model thanks to PyTorch
   resnet_model = models.resnet18(pretrained = True)
@@ -225,10 +317,17 @@ def ResNet_18_for_MNIST_srt():
   resnet_model.conv1=nn.Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False)
   
   # Change the last dense layer to fit our problematic needs
-  resnet_model.fc = nn.Sequential(OrderedDict([
-    ('fc1', nn.Linear(512, 128)), ('relu', nn.ReLU()),
-    ('fc2', nn.Linear(128, 1)), ('output', nn.Sigmoid())
-  ]))
+  if output_size==1:
+    resnet_model.fc = nn.Sequential(OrderedDict([
+      ('fc1', nn.Linear(512, 128)), ('relu', nn.ReLU()),
+      ('fc2', nn.Linear(128, 1)), ('output', nn.Sigmoid())
+    ]))
+  else:
+    resnet_model.fc = nn.Sequential(OrderedDict([
+      ('fc1', nn.Linear(512, 128)), ('relu', nn.ReLU()),
+      ('fc2', nn.Linear(128, output_size)), ('output', nn.Softmax(dim=1))
+    ]))
+    
   
   return resnet_model
 

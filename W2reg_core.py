@@ -342,9 +342,9 @@ class FairLoss(torch.autograd.Function):
 
 
 """
-X_data=X_train
-y_data=y_train
-S=S_train.numpy()
+X_train=X_train
+y_train=y_train
+S_train=S_train
 lambdavar=0.00001
 f_loss_attach=nn.MSELoss()
 EPOCHS = 1
@@ -358,18 +358,19 @@ early_stop_mini_batch=-1
 """
 
 
-def W2R_fit(model,X_data,y_data, S, lambdavar, f_loss_attach=nn.MSELoss() , EPOCHS = 5, BATCH_SIZE = 32,obs_for_histo=1000,DistBetween='All_predictions',DEVICE='cpu',ID_TreatedVar=0,optim_lr=0.0001,early_stop_mini_batch=-1):
+def W2R_fit(model,X_train,y_train, S_train, lambdavar, f_loss_attach=nn.MSELoss() , EPOCHS = 5, BATCH_SIZE = 32,obs_for_histo=1000,DistBetween='All_predictions',DEVICE='cpu',ID_TreatedVar=0,optim_lr=0.0001,early_stop_mini_batch=-1,test_data={'known':False}):
     """
-    -> X_data: input pytorch tensor are supposed to have a shape structured as [NbObs,:], [NbObs,:,:], or [NbObs,:,:,:]. 
-    -> y_data: true output pytorch tensor. Supposed to be 2D (for one-hot encoding or others), or 1D (eg for binary classification) 
-    -> S : 1D numpy array containing the sensitive variables labels in the mini-batch.  Each label is in {0,1}.
+    -> X_train: input pytorch tensor are supposed to have a shape structured as [NbObs,:], [NbObs,:,:], or [NbObs,:,:,:]. 
+    -> y_train: true output pytorch tensor. Supposed to be 2D (for one-hot encoding or others), or 1D (eg for binary classification) 
+    -> S_train : 1D numpy array containing the sensitive variables labels in the mini-batch.  Each label is in {0,1}.
     -> DistBetween can be : 'Predictions_errors' or 'All_predictions'
     -> f_loss_attach: Data attachment term in the loss. Can be eg  nn.MSELoss(), nn.BCELoss(), ... . Must be coherent with the model outputs and the true outputs.
     -> ID_TreatedVar: variable in the columns of the y on which the penalty is computed
+    -> test_data: dictionnary that eventually contains test data to evaluate the convergence. If test_data['known']==True, then test_data['X_test'], test_data['y_test'] and test_data['S_test'] must be filled.
     """
     
-    inputdatadim=len(X_data.shape)-1  #dimension of the input data (-1 is to take into account the fact that the first dimension corresponds to the observations)
-    outputdatadim=len(y_data.shape)-1  #dimension of the output data (-1 is to take into account the fact that the first dimension corresponds to the observations)
+    inputdatadim=len(X_train.shape)-1  #dimension of the input data (-1 is to take into account the fact that the first dimension corresponds to the observations)
+    outputdatadim=len(y_train.shape)-1  #dimension of the output data (-1 is to take into account the fact that the first dimension corresponds to the observations)
 
     optimizer = torch.optim.Adam(model.parameters(),lr=optim_lr) #,lr=0.001, betas=(0.9,0.999))
     
@@ -377,45 +378,46 @@ def W2R_fit(model,X_data,y_data, S, lambdavar, f_loss_attach=nn.MSELoss() , EPOC
     
     model.train()
     
+    if lambdavar==0.:
+      lambdavar=0.000000001
+      print("lambdavar was set to a negligible value to avoid divisions by zero")
     
-    n=X_data.shape[0]
+    n=X_train.shape[0]
     if early_stop_mini_batch<0:
       early_stop_mini_batch=n
       
-    IDs_S_eq_0=np.where(S<0.5)[0]
-    IDs_S_eq_1=np.where(S>=0.5)[0]
+    IDs_S_eq_0=np.where(S_train<0.5)[0]
+    IDs_S_eq_1=np.where(S_train>=0.5)[0]
 
     
     Lists_Results={}
-    Lists_Results['Acc']=[]
-    Lists_Results['W2']=[]
+    Lists_Results['Loss']=[]          #loss of the data attachement term 
+    Lists_Results['W2']=[]            #W2 at the end of each mini-batch
+    Lists_Results['Loss_S0_train']=[]
+    Lists_Results['Loss_S1_train']=[]
+    Lists_Results['Loss_S0_test']=[]
+    Lists_Results['Loss_S1_test']=[]
 
     
     epoch=0
     while epoch<EPOCHS:
-        obsIDs=np.arange(X_data.shape[0]) 
+        obsIDs=np.arange(X_train.shape[0]) 
         np.random.shuffle(obsIDs)
         
         batch_start=0 
         batchNb=0
         
-        #if epoch==EPOCHS-1:
-        #  BATCH_SIZE*=2
-        #
-        #if epoch==EPOCHS-3:
-        #  BATCH_SIZE*=3
-        
         while batch_start+BATCH_SIZE < n and batch_start+BATCH_SIZE < early_stop_mini_batch:
             
             #1) additional predictions to those of the mini-batch, in order to properly compute the Wasserstein histograms (may be computed at some iterations only)
-            #1.1) get current observation IDs for S=0 
+            #1.1) get current observation IDs for S_train=0 
             if len(IDs_S_eq_0)<obs_for_histo:
                 obsIDs_4histo_S0=IDs_S_eq_0.copy()
             else:
                 np.random.shuffle(IDs_S_eq_0)
                 obsIDs_4histo_S0=IDs_S_eq_0[0:obs_for_histo]
 
-            #1.2) get current observation IDs for S=1 
+            #1.2) get current observation IDs for S_train=1 
             if len(IDs_S_eq_1)<obs_for_histo:
                 obsIDs_4histo_S1=IDs_S_eq_1.copy()
             else:
@@ -426,20 +428,20 @@ def W2R_fit(model,X_data,y_data, S, lambdavar, f_loss_attach=nn.MSELoss() , EPOC
             obsIDs_4histo=np.concatenate([obsIDs_4histo_S0,obsIDs_4histo_S1])
             
             
-            #1.4) S, X, mask and y_true for the histograms
-            S_4histo=S[obsIDs_4histo]
+            #1.4) S_train, X, mask and y_true for the histograms
+            S_4histo=S_train[obsIDs_4histo]
             
             if inputdatadim==1:
-              X_4histo = X_data[obsIDs_4histo,:].float().to(DEVICE)
+              X_4histo = X_train[obsIDs_4histo,:].float().to(DEVICE)
             elif inputdatadim==2: 
-              X_4histo = X_data[obsIDs_4histo,:,:].float().to(DEVICE)
+              X_4histo = X_train[obsIDs_4histo,:,:].float().to(DEVICE)
             else:
-              X_4histo = X_data[obsIDs_4histo,:,:,:].float().to(DEVICE)
+              X_4histo = X_train[obsIDs_4histo,:,:,:].float().to(DEVICE)
             
             if outputdatadim==0:
-              y_4histo = y_data[obsIDs_4histo].view(-1,1).float()  #as the outputs are in a 1d vector
+              y_4histo = y_train[obsIDs_4histo].view(-1,1).float()  #as the outputs are in a 1d vector
             elif outputdatadim==1:
-              y_4histo = y_data[obsIDs_4histo,:].float()
+              y_4histo = y_train[obsIDs_4histo,:].float()
               
             #1.5) prediction
             with torch.no_grad():
@@ -451,19 +453,19 @@ def W2R_fit(model,X_data,y_data, S, lambdavar, f_loss_attach=nn.MSELoss() , EPOC
             Curr_obsIDs=obsIDs[batch_start:batch_start+BATCH_SIZE]
             
             #2.2) S, X, Mask, y_true
-            S_batch=S[Curr_obsIDs]
+            S_batch=S_train[Curr_obsIDs]
             
             if inputdatadim==1:
-              X_batch = X_data[Curr_obsIDs,:].float().to(DEVICE)
+              X_batch = X_train[Curr_obsIDs,:].float().to(DEVICE)
             elif inputdatadim==2:
-              X_batch = X_data[Curr_obsIDs,:,:].float().to(DEVICE)
+              X_batch = X_train[Curr_obsIDs,:,:].float().to(DEVICE)
             else:
-              X_batch = X_data[Curr_obsIDs,:,:,:].float().to(DEVICE)
+              X_batch = X_train[Curr_obsIDs,:,:,:].float().to(DEVICE)
             
             if outputdatadim==0:
-              y_batch = y_data[Curr_obsIDs].view(-1,1).float()  #as the outputs are in a 1d vector
+              y_batch = y_train[Curr_obsIDs].view(-1,1).float()  #as the outputs are in a 1d vector
             elif outputdatadim==1:
-              y_batch = y_data[Curr_obsIDs,:].float()
+              y_batch = y_train[Curr_obsIDs,:].float()
             
             
             #2.3) set the NN gradient to zero 
@@ -477,211 +479,6 @@ def W2R_fit(model,X_data,y_data, S, lambdavar, f_loss_attach=nn.MSELoss() , EPOC
             
             
             #4) prepare and compute the W2 term loss
-            if lambdavar>0.:
-              #4.1) concatenate the histogram information with those of the mini-batch
-              S_4histo_merged=np.concatenate([S_4histo,S_batch],axis=0)
-              y_4histo_merged=torch.cat([y_4histo,y_batch],dim=0)
-              y_pred_4histo_merged=torch.cat([y_pred_4histo.detach().to('cpu'),output.detach().to('cpu')],dim=0)  # .detach() was added
-            
-              #4.2) fill the InfoPenaltyTerm dictionnary
-              InfoPenaltyTerm={}                                         #FOR THE W2 REGULARIZATION
-              InfoPenaltyTerm['mb_S']=S_batch
-              InfoPenaltyTerm['o4h_S']=S_4histo_merged
-              InfoPenaltyTerm['o4h_y_pred']=y_pred_4histo_merged
-              InfoPenaltyTerm['o4h_y_true']=y_4histo_merged
-              InfoPenaltyTerm['DistBetween']=DistBetween    #'Predictions_errors' or 'All_predictions'
-              InfoPenaltyTerm['lambdavar']=lambdavar
-              InfoPenaltyTerm['ID_TreatedVar']=ID_TreatedVar
-            
-              #4.3) compute the W2 loss
-              #loss_regula=f_loss_regula(output.detach().to('cpu'), y_batch.view(-1,1),InfoPenaltyTerm)  #if used in the cpu -- memory losses otherwise
-              if DEVICE=='cpu':
-                loss_regula=f_loss_regula(output, y_batch,InfoPenaltyTerm)  #fair loss - no need to copy in the cpu which would induce memory losses (bug in pytorch when copying from cpu to cpu???)
-              else:
-                loss_regula=f_loss_regula(output.to('cpu'), y_batch,InfoPenaltyTerm)  #fair loss - must be calculated in the CPU but will be detached in the custom regularization function to avoid breaking the NN graph (tested with pytorch 1.3.1)
-            
-            #5) compute the whole loss  and perform the gradient descent step 
-            if lambdavar>0.:
-              loss =  loss_attach+loss_regula.to(DEVICE)
-              loss.backward()
-            else:
-              loss_attach.backward()
-            
-            optimizer.step()
-            
-            #6) update the first observation of the batch
-            batch_start+=BATCH_SIZE
-            batchNb+=1
-            
-            #7) save pertinent information to check the convergence
-            if lambdavar>0.:
-              locLoss=loss_attach.item() 
-              locW2=InfoPenaltyTerm['E_Reg']
-              Lists_Results['Acc'].append(locLoss)
-              Lists_Results['W2'].append(locW2/lambdavar)
-              print("epoch "+str(epoch)+" -- batchNb "+str(batchNb)+": Acc="+str(Lists_Results['Acc'][-1])+' -- W2='+str(locW2/lambdavar)+' --  lambda='+str(lambdavar))
-            else:
-              locLoss=loss_attach.item() 
-              locW2=0.
-              Lists_Results['Acc'].append(locLoss)
-              Lists_Results['W2'].append(0.)
-              print("epoch "+str(epoch)+" -- batchNb "+str(batchNb)+": Acc="+str(Lists_Results['Acc'][-1])+' --  lambda='+str(lambdavar))
-             
-            
-            #8) memory clean-up
-            del Curr_obsIDs, X_batch,  y_batch, output
-            del loss_attach
-            if lambdavar>0.:
-              del loss_regula , loss 
-              del obsIDs_4histo_S0, obsIDs_4histo_S1, obsIDs_4histo, S_4histo, X_4histo, y_4histo_merged, y_pred_4histo_merged, InfoPenaltyTerm
-            
-            
-        
-        epoch+=1
-    
-    #torch.save(model.state_dict(), "./model_l"+str(lambdavar)+".pytorchModel")         #save a model
-    model_cpu=model.to('cpu')
-    saved_models = { "model": model_cpu }
-    pickle.dump( saved_models, open( 'l'+str(lambdavar)+'_saved_model.p', "wb" ) )
-    # -> saved_models = pickle.load( open( "saved_model.p", "rb" ) )
-    # -> model_cpu=saved_models["model"]
-    # -> model=model_cpu.to(DEVICE)
-
-    
-    return Lists_Results
-
-
-
-
-
-
-def W2R_fit_NLP(model,X_data,Masks_data,y_data, S, lambdavar, f_loss_attach=nn.MSELoss() , EPOCHS = 5, BATCH_SIZE = 32,obs_for_histo=1000,DistBetween='All_predictions',DEVICE='cpu',ID_TreatedVar=0,optim_lr=0.0001,early_stop_mini_batch=-1):
-    """
-    -> X_data: input pytorch tensor are supposed to have a shape structured as [BatchSize,wordsNumber]. 
-    -> Masks_data: input pytorch tensor are supposed to have the same shape as X_data
-    -> y_data: true output pytorch tensor. Supposed to be 2D (for one-hot encoding or others), or 1D (eg for binary classification) 
-    -> S : 1D numpy array containing the sensitive variables labels in the mini-batch.  Each label is in {0,1}.
-    -> DistBetween can be : 'Predictions_errors' or 'All_predictions'
-    -> f_loss_attach: Data attachment term in the loss. Can be eg  nn.MSELoss(), nn.BCELoss(), ... . Must be coherent with the model outputs and the true outputs.
-    -> ID_TreatedVar: variable in the columns of the y on which the penalty is computed
-    """
-    
-    inputdatadim=len(X_data.shape)-1  #dimension of the input data (-1 is to take into account the fact that the first dimension corresponds to the observations)
-    outputdatadim=len(y_data.shape)-1  #dimension of the output data (-1 is to take into account the fact that the first dimension corresponds to the observations)
-
-
-    optimizer = torch.optim.Adam(model.parameters(),lr=optim_lr) #,lr=0.001, betas=(0.9,0.999))
-    
-    f_loss_regula = FairLoss.apply      #fair loss
-    
-    model.train()
-    
-    
-    n=X_data.shape[0]
-    if early_stop_mini_batch<0:
-      early_stop_mini_batch=n
-      
-    IDs_S_eq_0=np.where(S<0.5)[0]
-    IDs_S_eq_1=np.where(S>0.5)[0]
-
-    
-    Lists_Results={}
-    Lists_Results['Acc']=[]
-    Lists_Results['W2']=[]
-
-    
-    epoch=0
-    while epoch<EPOCHS:
-        obsIDs=np.arange(X_data.shape[0]) 
-        np.random.shuffle(obsIDs)
-        
-        batch_start=0 
-        batchNb=0
-        
-        #if epoch==EPOCHS-1:
-        #  BATCH_SIZE*=2
-        #
-        #if epoch==EPOCHS-3:
-        #  BATCH_SIZE*=3
-        
-        while batch_start+BATCH_SIZE < n and batch_start+BATCH_SIZE < early_stop_mini_batch:
-            
-            #1) additional predictions to those of the mini-batch, in order to properly compute the Wasserstein histograms (may be computed at some iterations only)
-            #1.1) get current observation IDs for S=0 
-            if len(IDs_S_eq_0)<obs_for_histo:
-                obsIDs_4histo_S0=IDs_S_eq_0.copy()
-            else:
-                np.random.shuffle(IDs_S_eq_0)
-                obsIDs_4histo_S0=IDs_S_eq_0[0:obs_for_histo]
-
-            #1.2) get current observation IDs for S=1 
-            if len(IDs_S_eq_1)<obs_for_histo:
-                obsIDs_4histo_S1=IDs_S_eq_1.copy()
-            else:
-                np.random.shuffle(IDs_S_eq_1)
-                obsIDs_4histo_S1=IDs_S_eq_1[0:obs_for_histo]
-            
-            #1.3) merge the observation IDs
-            obsIDs_4histo=np.concatenate([obsIDs_4histo_S0,obsIDs_4histo_S1])
-            
-            
-            #1.4) S, X, mask and y_true for the histograms
-            S_4histo=S[obsIDs_4histo]            
-            
-            if inputdatadim==1:
-              X_4histo = X_data[obsIDs_4histo,:].long().to(DEVICE)
-              Masks_4histo = Masks_data[obsIDs_4histo,:].to(DEVICE)
-            elif inputdatadim==2: 
-              X_4histo = X_data[obsIDs_4histo,:,:].long().to(DEVICE)
-              Masks_4histo = Masks_data[obsIDs_4histo,:,:].to(DEVICE)
-            else:
-              X_4histo = X_data[obsIDs_4histo,:,:,:].long().to(DEVICE)
-              Masks_4histo = Masks_data[obsIDs_4histo,:,:,:].to(DEVICE)
-              
-            if outputdatadim==0:
-              y_4histo = y_data[obsIDs_4histo].view(-1,1).float()  #as the outputs are in a 1d vector
-            elif outputdatadim==1:
-              y_4histo = y_data[obsIDs_4histo,:].float()
-            
-            #1.5) prediction
-            with torch.no_grad():
-                y_pred_4histo = model(ids=X_4histo, mask=Masks_4histo)
-                
-            #2) mini-batch predictions
-            
-            #2.1) get the observation IDs
-            Curr_obsIDs=obsIDs[batch_start:batch_start+BATCH_SIZE]
-            
-            #2.2) S, X, Mask, y_true
-            S_batch=S[Curr_obsIDs]
-            
-            if inputdatadim==1:
-              X_batch = X_data[Curr_obsIDs,:].long().to(DEVICE)
-              Masks_batch = Masks_data[Curr_obsIDs,:].to(DEVICE)
-            elif inputdatadim==2:
-              X_batch = X_data[Curr_obsIDs,:,:].long().to(DEVICE)
-              Masks_batch = Masks_data[Curr_obsIDs,:,:].to(DEVICE)
-            else:
-              X_batch = X_data[Curr_obsIDs,:,:,:].long().to(DEVICE)
-              Masks_batch = Masks_data[Curr_obsIDs,:,:,:].to(DEVICE)
-            
-            if outputdatadim==0:
-              y_batch = y_data[Curr_obsIDs].view(-1,1).float()  #as the outputs are in a 1d vector
-            elif outputdatadim==1:
-              y_batch = y_data[Curr_obsIDs,:].float()
-            
-            #2.3) set the NN gradient to zero 
-            optimizer.zero_grad()
-            
-            #2.4) mini-batch prediction 
-            output = model(ids=X_batch, mask=Masks_batch)
-            
-            #3) compute the attachement term loss
-            loss_attach=f_loss_attach(output, y_batch.to(DEVICE))
-            
-            
-            #4) prepare and compute the W2 term loss
-            
             #4.1) concatenate the histogram information with those of the mini-batch
             S_4histo_merged=np.concatenate([S_4histo,S_batch],axis=0)
             y_4histo_merged=torch.cat([y_4histo,y_batch],dim=0)
@@ -715,29 +512,343 @@ def W2R_fit_NLP(model,X_data,Masks_data,y_data, S, lambdavar, f_loss_attach=nn.M
             
             #7) save pertinent information to check the convergence
             locLoss=loss_attach.item() 
-            locW2=InfoPenaltyTerm['E_Reg']   
-             
-            Lists_Results['Acc'].append(locLoss)
+            locW2=InfoPenaltyTerm['E_Reg']
+            Lists_Results['Loss'].append(locLoss)
             Lists_Results['W2'].append(locW2/lambdavar)
+            print("epoch "+str(epoch)+" -- batchNb "+str(batchNb)+": Loss="+str(Lists_Results['Loss'][-1])+' -- W2='+str(locW2/lambdavar)+' --  lambda='+str(lambdavar))
+             
             
-            #8) memory clean-up
-            del Curr_obsIDs, X_batch,  y_batch, output, Masks_batch
-            del obsIDs_4histo_S0, obsIDs_4histo_S1, obsIDs_4histo, S_4histo, X_4histo, y_4histo_merged, y_pred_4histo_merged, Masks_4histo, InfoPenaltyTerm
-            del loss_attach ,loss_regula , loss 
-            
-            
-            print("epoch "+str(epoch)+" -- batchNb "+str(batchNb)+": "+str(Lists_Results['Acc'][-1])+' '+str(locW2)+' --  lambda='+str(lambdavar))
+        #save advanced information at the end of the epoch...
+        #... inforamtion on the training set
+        S0=np.where(S_4histo_merged<0.5)
+        S1=np.where(S_4histo_merged>0.5)
         
+        loss_attach=f_loss_attach(y_pred_4histo_merged[S0].to('cpu'), y_4histo_merged[S0])
+        Lists_Results['Loss_S0_train'].append(loss_attach.item())
+        loss_attach=f_loss_attach(y_pred_4histo_merged[S1].to('cpu'), y_4histo_merged[S1])
+        Lists_Results['Loss_S1_train'].append(loss_attach.item())
+        
+        if test_data['known']==True:
+          print("Convergence measured on the test set -> GO")
+          
+          #draw the observations
+          tst_IDs_S_eq_0=np.where(test_data['S_test']<0.5)[0]
+          if len(tst_IDs_S_eq_0)<obs_for_histo:
+            obsIDs_4histo_S0=tst_IDs_S_eq_0.copy()
+          else:
+            np.random.shuffle(tst_IDs_S_eq_0)
+            obsIDs_4histo_S0=tst_IDs_S_eq_0[0:obs_for_histo]
+
+          tst_IDs_S_eq_1=np.where(test_data['S_test']>=0.5)[0]
+          if len(tst_IDs_S_eq_1)<obs_for_histo:
+            obsIDs_4histo_S1=tst_IDs_S_eq_1.copy()
+          else:
+            np.random.shuffle(tst_IDs_S_eq_1)
+            obsIDs_4histo_S1=tst_IDs_S_eq_1[0:obs_for_histo]
+          
+          obsIDs_4histo=np.concatenate([obsIDs_4histo_S0,obsIDs_4histo_S1])
+            
+          #format the data
+          S_4histo=test_data['S_test'][obsIDs_4histo]
+            
+          if inputdatadim==1:
+            X_4histo = test_data['X_test'][obsIDs_4histo,:].float().to(DEVICE)
+          elif inputdatadim==2: 
+            X_4histo = test_data['X_test'][obsIDs_4histo,:,:].float().to(DEVICE)
+          else:
+            X_4histo = test_data['X_test'][obsIDs_4histo,:,:,:].float().to(DEVICE)
+            
+          if outputdatadim==0:
+            y_4histo = test_data['y_test'][obsIDs_4histo].view(-1,1).float()  #as the outputs are in a 1d vector
+          elif outputdatadim==1:
+            y_4histo = test_data['y_test'][obsIDs_4histo,:].float()
+              
+          #prediction
+          with torch.no_grad():
+              y_pred_4histo = model(X_4histo)
+
+          #information on the training set
+          S0=np.where(S_4histo<0.5)
+          S1=np.where(S_4histo>0.5)
+        
+          loss_attach=f_loss_attach(y_pred_4histo[S0], y_4histo[S0].to(DEVICE))
+          Lists_Results['Loss_S0_test'].append(loss_attach.item())
+          loss_attach=f_loss_attach(y_pred_4histo[S1], y_4histo[S1].to(DEVICE))
+          Lists_Results['Loss_S1_test'].append(loss_attach.item())
+          
+          print("Convergence measured on the test set -> DONE") 
+        
+        
+        #update the epoch number
         epoch+=1
     
-    #torch.save(model.state_dict(), "./model_l"+str(lambdavar)+".pytorchModel")         #save a model
+    #memory clean-up
+    del Curr_obsIDs, X_batch,  y_batch, output
+    del loss_attach
+    del loss_regula , loss 
+    del obsIDs_4histo_S0, obsIDs_4histo_S1, obsIDs_4histo, S_4histo, X_4histo, y_4histo_merged, y_pred_4histo_merged, S_4histo_merged, InfoPenaltyTerm
+    
     model_cpu=model.to('cpu')
     saved_models = { "model": model_cpu }
-    pickle.dump( saved_models, open( 'l'+str(lambdavar)+'_last_saved_model.p', "wb" ) )
-    # -> saved_models = pickle.load( open( "_last_saved_model.p", "rb" ) )
+    pickle.dump( saved_models, open( 'l'+str(lambdavar)+'_saved_model.p', "wb" ) )
+    # -> saved_models = pickle.load( open( "saved_model.p", "rb" ) )
     # -> model_cpu=saved_models["model"]
     # -> model=model_cpu.to(DEVICE)
 
     
     return Lists_Results
+
+
+def W2R_fit_NLP(model,X_train,Masks_train,y_train, S_train, lambdavar, f_loss_attach=nn.MSELoss() , EPOCHS = 5, BATCH_SIZE = 32,obs_for_histo=1000,DistBetween='All_predictions',DEVICE='cpu',ID_TreatedVar=0,optim_lr=0.0001,early_stop_mini_batch=-1,test_data={'known':False}):
+    """
+    -> X_train: input pytorch tensor are supposed to have a shape structured as [NbObs,:], [NbObs,:,:], or [NbObs,:,:,:]. 
+    -> y_train: true output pytorch tensor. Supposed to be 2D (for one-hot encoding or others), or 1D (eg for binary classification)
+    -> Masks_train: input pytorch tensor maksing the useless information. Has the same shape as X_train
+    -> S_train : 1D numpy array containing the sensitive variables labels in the mini-batch.  Each label is in {0,1}.
+    -> DistBetween can be : 'Predictions_errors' or 'All_predictions'
+    -> f_loss_attach: Data attachment term in the loss. Can be eg  nn.MSELoss(), nn.BCELoss(), ... . Must be coherent with the model outputs and the true outputs.
+    -> ID_TreatedVar: variable in the columns of the y on which the penalty is computed
+    -> test_data: dictionnary that eventually contains test data to evaluate the convergence. If test_data['known']==True, then test_data['X_test'], test_data['Masks_test'], test_data['y_test'] and test_data['S_test'] must be filled.
+    """
+    
+    inputdatadim=len(X_train.shape)-1  #dimension of the input data (-1 is to take into account the fact that the first dimension corresponds to the observations)
+    outputdatadim=len(y_train.shape)-1  #dimension of the output data (-1 is to take into account the fact that the first dimension corresponds to the observations)
+
+    optimizer = torch.optim.Adam(model.parameters(),lr=optim_lr) #,lr=0.001, betas=(0.9,0.999))
+    
+    f_loss_regula = FairLoss.apply      #fair loss
+    
+    model.train()
+    
+    if lambdavar==0.:
+      lambdavar=0.000000001
+      print("lambdavar was set to a negligible value to avoid divisions by zero")
+    
+    n=X_train.shape[0]
+    if early_stop_mini_batch<0:
+      early_stop_mini_batch=n
+      
+    IDs_S_eq_0=np.where(S_train<0.5)[0]
+    IDs_S_eq_1=np.where(S_train>=0.5)[0]
+
+    
+    Lists_Results={}
+    Lists_Results['Loss']=[]          #loss of the data attachement term 
+    Lists_Results['W2']=[]            #W2 at the end of each mini-batch
+    Lists_Results['Loss_S0_train']=[]
+    Lists_Results['Loss_S1_train']=[]
+    Lists_Results['Loss_S0_test']=[]
+    Lists_Results['Loss_S1_test']=[]
+
+    
+    epoch=0
+    while epoch<EPOCHS:
+        obsIDs=np.arange(X_train.shape[0]) 
+        np.random.shuffle(obsIDs)
+        
+        batch_start=0 
+        batchNb=0
+        
+        while batch_start+BATCH_SIZE < n and batch_start+BATCH_SIZE < early_stop_mini_batch:
+            
+            #1) additional predictions to those of the mini-batch, in order to properly compute the Wasserstein histograms (may be computed at some iterations only)
+            #1.1) get current observation IDs for S_train=0 
+            if len(IDs_S_eq_0)<obs_for_histo:
+                obsIDs_4histo_S0=IDs_S_eq_0.copy()
+            else:
+                np.random.shuffle(IDs_S_eq_0)
+                obsIDs_4histo_S0=IDs_S_eq_0[0:obs_for_histo]
+
+            #1.2) get current observation IDs for S_train=1 
+            if len(IDs_S_eq_1)<obs_for_histo:
+                obsIDs_4histo_S1=IDs_S_eq_1.copy()
+            else:
+                np.random.shuffle(IDs_S_eq_1)
+                obsIDs_4histo_S1=IDs_S_eq_1[0:obs_for_histo]
+            
+            #1.3) merge the observation IDs
+            obsIDs_4histo=np.concatenate([obsIDs_4histo_S0,obsIDs_4histo_S1])
+            
+            
+            #1.4) S_train, X, mask and y_true for the histograms
+            S_4histo=S_train[obsIDs_4histo]
+            
+            if inputdatadim==1:
+              X_4histo = X_train[obsIDs_4histo,:].long().to(DEVICE)
+              Masks_4histo = Masks_train[obsIDs_4histo,:].to(DEVICE)
+            elif inputdatadim==2: 
+              X_4histo = X_train[obsIDs_4histo,:,:].long().to(DEVICE)
+              Masks_4histo = Masks_train[obsIDs_4histo,:,:].to(DEVICE)
+            else:
+              X_4histo = X_train[obsIDs_4histo,:,:,:].long().to(DEVICE)
+              Masks_4histo = Masks_train[obsIDs_4histo,:,:,:].to(DEVICE)
+            
+            if outputdatadim==0:
+              y_4histo = y_train[obsIDs_4histo].view(-1,1).float()  #as the outputs are in a 1d vector
+            elif outputdatadim==1:
+              y_4histo = y_train[obsIDs_4histo,:].float()
+              
+            #1.5) prediction
+            with torch.no_grad():
+                y_pred_4histo = model(ids=X_4histo , mask=Masks_4histo)
+                
+            #2) mini-batch predictions
+            
+            #2.1) get the observation IDs
+            Curr_obsIDs=obsIDs[batch_start:batch_start+BATCH_SIZE]
+            
+            #2.2) S, X, Mask, y_true
+            S_batch=S_train[Curr_obsIDs]
+            
+            if inputdatadim==1:
+              X_batch = X_train[Curr_obsIDs,:].long().to(DEVICE)
+              Masks_batch = Masks_train[Curr_obsIDs,:].to(DEVICE)
+            elif inputdatadim==2:
+              X_batch = X_train[Curr_obsIDs,:,:].long().to(DEVICE)
+              Masks_batch = Masks_train[Curr_obsIDs,:,:].to(DEVICE)
+            else:
+              X_batch = X_train[Curr_obsIDs,:,:,:].long().to(DEVICE)
+              Masks_batch = Masks_train[Curr_obsIDs,:,:,:].to(DEVICE)
+            
+            if outputdatadim==0:
+              y_batch = y_train[Curr_obsIDs].view(-1,1).float()  #as the outputs are in a 1d vector
+            elif outputdatadim==1:
+              y_batch = y_train[Curr_obsIDs,:].float()
+            
+            
+            #2.3) set the NN gradient to zero 
+            optimizer.zero_grad()
+            
+            #2.4) mini-batch prediction 
+            output = model(ids=X_batch, mask=Masks_batch)
+            
+            #3) compute the attachement term loss
+            loss_attach=f_loss_attach(output, y_batch.to(DEVICE))
+            
+            
+            #4) prepare and compute the W2 term loss
+            #4.1) concatenate the histogram information with those of the mini-batch
+            S_4histo_merged=np.concatenate([S_4histo,S_batch],axis=0)
+            y_4histo_merged=torch.cat([y_4histo,y_batch],dim=0)
+            y_pred_4histo_merged=torch.cat([y_pred_4histo.detach().to('cpu'),output.detach().to('cpu')],dim=0)  # .detach() was added
+            
+            #4.2) fill the InfoPenaltyTerm dictionnary
+            InfoPenaltyTerm={}                                         #FOR THE W2 REGULARIZATION
+            InfoPenaltyTerm['mb_S']=S_batch
+            InfoPenaltyTerm['o4h_S']=S_4histo_merged
+            InfoPenaltyTerm['o4h_y_pred']=y_pred_4histo_merged
+            InfoPenaltyTerm['o4h_y_true']=y_4histo_merged
+            InfoPenaltyTerm['DistBetween']=DistBetween    #'Predictions_errors' or 'All_predictions'
+            InfoPenaltyTerm['lambdavar']=lambdavar
+            InfoPenaltyTerm['ID_TreatedVar']=ID_TreatedVar
+            
+            #4.3) compute the W2 loss
+            #loss_regula=f_loss_regula(output.detach().to('cpu'), y_batch.view(-1,1),InfoPenaltyTerm)  #if used in the cpu -- memory losses otherwise
+            if DEVICE=='cpu':
+              loss_regula=f_loss_regula(output, y_batch,InfoPenaltyTerm)  #fair loss - no need to copy in the cpu which would induce memory losses (bug in pytorch when copying from cpu to cpu???)
+            else:
+              loss_regula=f_loss_regula(output.to('cpu'), y_batch,InfoPenaltyTerm)  #fair loss - must be calculated in the CPU but will be detached in the custom regularization function to avoid breaking the NN graph (tested with pytorch 1.3.1)
+            
+            #5) compute the whole loss  and perform the gradient descent step 
+            loss =  loss_attach+loss_regula.to(DEVICE)
+            loss.backward()
+            optimizer.step()
+            
+            #6) update the first observation of the batch
+            batch_start+=BATCH_SIZE
+            batchNb+=1
+            
+            #7) save pertinent information to check the convergence
+            locLoss=loss_attach.item() 
+            locW2=InfoPenaltyTerm['E_Reg']
+            Lists_Results['Loss'].append(locLoss)
+            Lists_Results['W2'].append(locW2/lambdavar)
+            print("epoch "+str(epoch)+" -- batchNb "+str(batchNb)+": Loss="+str(Lists_Results['Loss'][-1])+' -- W2='+str(locW2/lambdavar)+' --  lambda='+str(lambdavar))
+             
+            
+        #save advanced information at the end of the epoch...
+        #... inforamtion on the training set
+        S0=np.where(S_4histo_merged<0.5)
+        S1=np.where(S_4histo_merged>0.5)
+        
+        loss_attach=f_loss_attach(y_pred_4histo_merged[S0].to('cpu'), y_4histo_merged[S0])
+        Lists_Results['Loss_S0_train'].append(loss_attach.item())
+        loss_attach=f_loss_attach(y_pred_4histo_merged[S1].to('cpu'), y_4histo_merged[S1])
+        Lists_Results['Loss_S1_train'].append(loss_attach.item())
+        
+        if test_data['known']==True:
+          print("Convergence measured on the test set -> GO")
+          
+          #draw the observations
+          tst_IDs_S_eq_0=np.where(test_data['S_test']<0.5)[0]
+          if len(tst_IDs_S_eq_0)<obs_for_histo:
+            obsIDs_4histo_S0=tst_IDs_S_eq_0.copy()
+          else:
+            np.random.shuffle(tst_IDs_S_eq_0)
+            obsIDs_4histo_S0=tst_IDs_S_eq_0[0:obs_for_histo]
+
+          tst_IDs_S_eq_1=np.where(test_data['S_test']>=0.5)[0]
+          if len(tst_IDs_S_eq_1)<obs_for_histo:
+            obsIDs_4histo_S1=tst_IDs_S_eq_1.copy()
+          else:
+            np.random.shuffle(tst_IDs_S_eq_1)
+            obsIDs_4histo_S1=tst_IDs_S_eq_1[0:obs_for_histo]
+          
+          obsIDs_4histo=np.concatenate([obsIDs_4histo_S0,obsIDs_4histo_S1])
+            
+          #format the data
+          S_4histo=test_data['S_test'][obsIDs_4histo]
+            
+          if inputdatadim==1:
+            X_4histo = test_data['X_test'][obsIDs_4histo,:].long().to(DEVICE)
+            Masks_4histo = test_data['Masks_test'][obsIDs_4histo,:].to(DEVICE)
+          elif inputdatadim==2: 
+            X_4histo = test_data['X_test'][obsIDs_4histo,:,:].long().to(DEVICE)
+            Masks_4histo = test_data['Masks_test'][obsIDs_4histo,:,:].to(DEVICE)
+          else:
+            X_4histo = test_data['X_test'][obsIDs_4histo,:,:,:].long().to(DEVICE)
+            Masks_4histo = test_data['Masks_test'][obsIDs_4histo,:,:,:].to(DEVICE)
+            
+          if outputdatadim==0:
+            y_4histo = test_data['y_test'][obsIDs_4histo].view(-1,1).float()  #as the outputs are in a 1d vector
+          elif outputdatadim==1:
+            y_4histo = test_data['y_test'][obsIDs_4histo,:].float()
+              
+          #prediction
+          with torch.no_grad():
+              y_pred_4histo = model(ids=X_4histo,mask=Masks_4histo)
+
+
+          #information on the training set
+          S0=np.where(S_4histo<0.5)
+          S1=np.where(S_4histo>0.5)
+        
+          loss_attach=f_loss_attach(y_pred_4histo[S0], y_4histo[S0].to(DEVICE))
+          Lists_Results['Loss_S0_test'].append(loss_attach.item())
+          loss_attach=f_loss_attach(y_pred_4histo[S1], y_4histo[S1].to(DEVICE))
+          Lists_Results['Loss_S1_test'].append(loss_attach.item())
+          
+          print("Convergence measured on the test set -> DONE") 
+        
+        
+        #update the epoch number
+        epoch+=1
+    
+    #memory clean-up
+    del Curr_obsIDs, X_batch,  y_batch, output
+    del loss_attach
+    del loss_regula , loss 
+    del obsIDs_4histo_S0, obsIDs_4histo_S1, obsIDs_4histo, S_4histo, X_4histo, y_4histo_merged, y_pred_4histo_merged, S_4histo_merged, InfoPenaltyTerm
+    del Masks_4histo,Masks_batch
+    
+    model_cpu=model.to('cpu')
+    saved_models = { "model": model_cpu }
+    pickle.dump( saved_models, open( 'l'+str(lambdavar)+'_saved_model.p', "wb" ) )
+    # -> saved_models = pickle.load( open( "saved_model.p", "rb" ) )
+    # -> model_cpu=saved_models["model"]
+    # -> model=model_cpu.to(DEVICE)
+
+    return Lists_Results
+
+
 
