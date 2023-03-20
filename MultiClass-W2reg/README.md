@@ -2,7 +2,7 @@
 
 You will find in this directory the multi-class extention of the original W2reg code for regularized binary classification.
 
-This multi-class extension has been extensively tested on Bert masked NLP data so far (i.e. with function W2R_fit_NLP), but not non-masked data. Please use the binary classification version in the root directory if you treat non-masked data (eg tabular data, images, ...).
+This multi-class extension has been extensively tested on Bert-style (i.e. on masked) NLP data so far. The use of W2R_fit_NLP is then validated. No recent tests have however been made on the multi-class extension for non-masked data  (eg tabular data, images, ...). Please use the binary classification version of the root directory if you treat non-masked data.
 The multi-class extension for non-masked data should however be available in the following weeks, after validation. 
 
 ### Citations
